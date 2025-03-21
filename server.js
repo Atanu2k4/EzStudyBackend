@@ -1,35 +1,71 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import axios from "axios";
 import multer from "multer";
 import fs from "fs";
 import path from "path";
 import pdfParse from "pdf-parse";
-import Groq from "groq-sdk";
+import nodemailer from "nodemailer";
 
 dotenv.config();
 const app = express();
 const port = 5000;
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 app.use(cors());
 
-// Multer storage config
+// Contact Form Route
+app.post("/contact", async (req, res) => {
+  const { firstName, lastName, email, message } = req.body;
+
+  if (!firstName || !lastName || !email || !message) {
+    return res.status(400).json({ error: "All fields are required" });
+  }
+
+  try {
+    // Setup email transporter (Example: Gmail SMTP)
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USER, // Set your email in .env
+        pass: process.env.EMAIL_PASS, // Set your email password in .env
+      },
+    });
+
+    // Email options
+    const mailOptions = {
+      from: email,
+      to: process.env.EMAIL_RECEIVER, // Admin email to receive messages
+      subject: "New Contact Form Submission",
+      text: `Name: ${firstName} ${lastName}\nEmail: ${email}\nMessage: ${message}`,
+    };
+
+    // Send email
+    await transporter.sendMail(mailOptions);
+
+    res.json({ success: true, message: "Message sent successfully" });
+  } catch (error) {
+    console.error("Error sending email:", error);
+    res.status(500).json({ error: "Failed to send message" });
+  }
+});
+
+// Configure Multer for file uploads
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "/uploads"),
+  destination: (req, file, cb) => cb(null, "uploads/"),
   filename: (req, file, cb) => cb(null, file.originalname),
 });
-const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
+const upload = multer({
+  storage,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
+});
 
 // Ensure uploads folder exists
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
 
-// Store chat history per session
-const chatHistory = {};
-
-// Function to extract text from PDFs
+// Function to extract text from PDF
 async function extractTextFromPDF(pdfPath) {
   try {
     const dataBuffer = fs.readFileSync(pdfPath);
@@ -41,83 +77,104 @@ async function extractTextFromPDF(pdfPath) {
   }
 }
 
-// Read file content based on extension
+// Function to read file content based on type
 async function readFileContent(filePath) {
   const fileExtension = path.extname(filePath).toLowerCase();
-  return fileExtension === ".pdf"
-    ? await extractTextFromPDF(filePath)
-    : fs.readFileSync(filePath, "utf-8");
+
+  if (fileExtension === ".pdf") {
+    return await extractTextFromPDF(filePath);
+  } else {
+    // For text files, read directly
+    return fs.readFileSync(filePath, "utf-8");
+  }
 }
 
-// 🔹 AI Chat Route (Handles both normal chat and file-related queries)
+// AI Chat Route
 app.post("/ask", async (req, res) => {
-  const { query, sessionId } = req.body;
+  const { query } = req.body;
   if (!query) return res.status(400).json({ error: "Query is required" });
 
-  // Retrieve chat history
-  chatHistory[sessionId] = chatHistory[sessionId] || [];
-  chatHistory[sessionId].push({ role: "user", content: query });
-
   try {
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: "You are a helpful AI assistant." },
-        ...chatHistory[sessionId], // Maintain context across queries
-      ],
-    });
+    const response = await axios.post(
+      "https://api.together.xyz/v1/chat/completions",
+      {
+        model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        messages: [{ role: "user", content: query }],
+        max_tokens: 8192,
+        stream: false,
+        temperature: 0.7,
+        top_k: 50,
+        top_p: 0.95,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.TOGETHER_API_KEY?.trim()}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 180000,
+      }
+    );
 
     const responseContent =
-      response.choices[0]?.message?.content || "No response";
-    chatHistory[sessionId].push({
-      role: "assistant",
-      content: responseContent,
-    });
+      response.data.choices[0]?.message?.content || "No response";
 
     return res.json({ response: responseContent });
   } catch (error) {
-    console.error("❌ Groq AI API Error:", error.message);
+    console.error("❌ Together AI API Error:", error.message);
     return res
       .status(500)
-      .json({ error: "Failed to fetch response from Groq AI" });
+      .json({ error: "Failed to fetch response from Together AI" });
   }
 });
 
-// 🔹 File Upload Route (Summarization + File Memory)
+// File Upload Route (Summarization)
 app.post("/upload", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-  const sessionId = req.body.sessionId || "default";
   try {
+    // Read file content based on file type
     const fileContent = await readFileContent(req.file.path);
-    const truncatedContent = fileContent.substring(0, 65000); // Limit input size
+
+    // Truncate large files for processing
+    const maxInputLength = 65000;
+    let truncatedContent =
+      fileContent.length > maxInputLength
+        ? fileContent.substring(0, maxInputLength)
+        : fileContent;
 
     console.log(
       `Processing file: ${req.file.originalname} (${truncatedContent.length} chars)`
     );
 
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: "You are an AI that summarizes documents." },
-        {
-          role: "user",
-          content: `Summarize this document:\n\n${truncatedContent}`,
+    const response = await axios.post(
+      "https://api.together.xyz/v1/chat/completions",
+      {
+        model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        messages: [
+          {
+            role: "user",
+            content: `Summarize this document in detail:\n\n${truncatedContent}`,
+          },
+        ],
+        max_tokens: 8192,
+        stream: false,
+        temperature: 0.7,
+        top_k: 50,
+        top_p: 0.95,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.TOGETHER_API_KEY?.trim()}`,
+          "Content-Type": "application/json",
         },
-      ],
-    });
+        timeout: 300000,
+      }
+    );
 
     const summary =
-      response.choices[0]?.message?.content || "No summary available";
+      response.data.choices[0]?.message?.content || "No summary available";
 
-    // Store file content in chat history
-    chatHistory[sessionId] = chatHistory[sessionId] || [];
-    chatHistory[sessionId].push({
-      role: "system",
-      content: `User uploaded a file: ${req.file.originalname}. Content:\n\n${truncatedContent}`,
-    });
-
-    fs.unlinkSync(req.file.path); // Delete file after processing
+    fs.unlinkSync(req.file.path); // Delete original file after processing
 
     return res.json({ summary });
   } catch (error) {
@@ -128,7 +185,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
   }
 });
 
-// Start Server
+// Start the server
 app.listen(port, () =>
   console.log(`🚀 Server running on http://localhost:${port}`)
 );
