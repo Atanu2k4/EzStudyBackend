@@ -1,135 +1,134 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import axios from "axios";
 import multer from "multer";
 import fs from "fs";
 import path from "path";
 import pdfParse from "pdf-parse";
+import Groq from "groq-sdk";
 
 dotenv.config();
 const app = express();
 const port = 5000;
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 app.use(cors());
 
-// Configure Multer for file uploads
+// Multer storage config
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, "uploads/"),
-    filename: (req, file, cb) => cb(null, file.originalname),
+  destination: (req, file, cb) => cb(null, "/uploads"),
+  filename: (req, file, cb) => cb(null, file.originalname),
 });
-const upload = multer({
-    storage,
-    limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
-});
+const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
 
 // Ensure uploads folder exists
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
 
-// Function to extract text from PDF
+// Store chat history per session
+const chatHistory = {};
+
+// Function to extract text from PDFs
 async function extractTextFromPDF(pdfPath) {
-    try {
-        const dataBuffer = fs.readFileSync(pdfPath);
-        const data = await pdfParse(dataBuffer);
-        return data.text;
-    } catch (error) {
-        console.error("Error extracting PDF text:", error);
-        throw error;
-    }
+  try {
+    const dataBuffer = fs.readFileSync(pdfPath);
+    const data = await pdfParse(dataBuffer);
+    return data.text;
+  } catch (error) {
+    console.error("Error extracting PDF text:", error);
+    throw error;
+  }
 }
 
-// Function to read file content based on type
+// Read file content based on extension
 async function readFileContent(filePath) {
-    const fileExtension = path.extname(filePath).toLowerCase();
-
-    if (fileExtension === '.pdf') {
-        return await extractTextFromPDF(filePath);
-    } else {
-        // For text files, read directly
-        return fs.readFileSync(filePath, "utf-8");
-    }
+  const fileExtension = path.extname(filePath).toLowerCase();
+  return fileExtension === ".pdf"
+    ? await extractTextFromPDF(filePath)
+    : fs.readFileSync(filePath, "utf-8");
 }
 
-// AI Chat Route
+// 🔹 AI Chat Route (Handles both normal chat and file-related queries)
 app.post("/ask", async (req, res) => {
-    const { query } = req.body;
-    if (!query) return res.status(400).json({ error: "Query is required" });
+  const { query, sessionId } = req.body;
+  if (!query) return res.status(400).json({ error: "Query is required" });
 
-    try {
-        const response = await axios.post(
-            "https://api.together.xyz/v1/chat/completions",
-            {
-                model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-                messages: [{ role: "user", content: query }],
-                max_tokens: 8192,
-                stream: false,
-                temperature: 0.7,
-                top_k: 50,
-                top_p: 0.95
-            },
-            {
-                headers: {
-                    "Authorization": `Bearer ${process.env.TOGETHER_API_KEY?.trim()}`,
-                    "Content-Type": "application/json"
-                },
-                timeout: 180000
-            }
-        );
+  // Retrieve chat history
+  chatHistory[sessionId] = chatHistory[sessionId] || [];
+  chatHistory[sessionId].push({ role: "user", content: query });
 
-        const responseContent = response.data.choices[0]?.message?.content || "No response";
+  try {
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: "You are a helpful AI assistant." },
+        ...chatHistory[sessionId], // Maintain context across queries
+      ],
+    });
 
-        return res.json({ response: responseContent });
-    } catch (error) {
-        console.error("❌ Together AI API Error:", error.message);
-        return res.status(500).json({ error: "Failed to fetch response from Together AI" });
-    }
+    const responseContent =
+      response.choices[0]?.message?.content || "No response";
+    chatHistory[sessionId].push({
+      role: "assistant",
+      content: responseContent,
+    });
+
+    return res.json({ response: responseContent });
+  } catch (error) {
+    console.error("❌ Groq AI API Error:", error.message);
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch response from Groq AI" });
+  }
 });
 
-// File Upload Route (Summarization)
+// 🔹 File Upload Route (Summarization + File Memory)
 app.post("/upload", upload.single("file"), async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-    try {
-        // Read file content based on file type
-        const fileContent = await readFileContent(req.file.path);
+  const sessionId = req.body.sessionId || "default";
+  try {
+    const fileContent = await readFileContent(req.file.path);
+    const truncatedContent = fileContent.substring(0, 65000); // Limit input size
 
-        // Truncate large files for processing
-        const maxInputLength = 65000;
-        let truncatedContent = fileContent.length > maxInputLength
-            ? fileContent.substring(0, maxInputLength)
-            : fileContent;
+    console.log(
+      `Processing file: ${req.file.originalname} (${truncatedContent.length} chars)`
+    );
 
-        console.log(`Processing file: ${req.file.originalname} (${truncatedContent.length} chars)`);
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: "You are an AI that summarizes documents." },
+        {
+          role: "user",
+          content: `Summarize this document:\n\n${truncatedContent}`,
+        },
+      ],
+    });
 
-        const response = await axios.post(
-            "https://api.together.xyz/v1/chat/completions",
-            {
-                model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-                messages: [{ role: "user", content: `Summarize this document in detail:\n\n${truncatedContent}` }],
-                max_tokens: 8192,
-                stream: false,
-                temperature: 0.7,
-                top_k: 50,
-                top_p: 0.95
-            },
-            {
-                headers: { "Authorization": `Bearer ${process.env.TOGETHER_API_KEY?.trim()}`, "Content-Type": "application/json" },
-                timeout: 300000
-            }
-        );
+    const summary =
+      response.choices[0]?.message?.content || "No summary available";
 
-        const summary = response.data.choices[0]?.message?.content || "No summary available";
+    // Store file content in chat history
+    chatHistory[sessionId] = chatHistory[sessionId] || [];
+    chatHistory[sessionId].push({
+      role: "system",
+      content: `User uploaded a file: ${req.file.originalname}. Content:\n\n${truncatedContent}`,
+    });
 
-        fs.unlinkSync(req.file.path); // Delete original file after processing
+    fs.unlinkSync(req.file.path); // Delete file after processing
 
-        return res.json({ summary });
-    } catch (error) {
-        console.error("❌ Error processing file:", error.message);
-        return res.status(500).json({ error: "Failed to process file", details: error.message });
-    }
+    return res.json({ summary });
+  } catch (error) {
+    console.error("❌ Error processing file:", error.message);
+    return res
+      .status(500)
+      .json({ error: "Failed to process file", details: error.message });
+  }
 });
 
-// Start the server
-app.listen(port, () => console.log(`🚀 Server running on http://localhost:${port}`));
+// Start Server
+app.listen(port, () =>
+  console.log(`🚀 Server running on http://localhost:${port}`)
+);
