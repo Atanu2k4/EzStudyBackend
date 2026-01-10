@@ -131,7 +131,7 @@ ${config?.mode === 'tutor' ? 'Focus on explaining concepts clearly and asking gu
 ${config?.mode === 'summarizer' ? 'Focus on condensing information into high-impact bullet points.' : ''}
 ${config?.mode === 'examiner' ? 'Focus on testing the user knowledge and providing critical feedback.' : ''}
 ${fileContext ? `Files have been uploaded. Please carefully read and analyze their content when answering the user's questions. Use specific information from the files.${fileContext}` : ''}
-Provide answers in clear markdown format. Use **bold** text for emphasis on key terms, important concepts, and headings. Use *italic* text for subtle emphasis, definitions, or book titles. Structure your responses with proper formatting to enhance readability.`;
+Provide answers in clear markdown format.`;
 
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
