@@ -49,14 +49,9 @@ const uploadProfileImage = multer({ storage: profileImageStorage });
 
 // Security headers middleware
 app.use((req, res, next) => {
-    // Allow requests from frontend
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-
+    // Remove manual CORS headers to let the cors middleware handle it
     // Permissive CSP for development
-    res.setHeader('Content-Security-Policy', "default-src *; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline'; img-src * data: blob:");
+    res.setHeader('Content-Security-Policy', "default-src *; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline'; img-src * data: blob:; connect-src *");
 
     if (req.method === 'OPTIONS') {
         res.sendStatus(200);
