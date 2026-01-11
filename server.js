@@ -5,8 +5,17 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import pdfParse from 'pdf-parse';
+import { v2 as cloudinary } from 'cloudinary';
+import { CloudinaryStorage } from 'multer-storage-cloudinary';
 
 dotenv.config();
+
+// Configure Cloudinary
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -25,6 +34,18 @@ const storage = multer.diskStorage({
     }
 });
 const upload = multer({ storage });
+
+// Configure Cloudinary storage for profile images
+const profileImageStorage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'ezstudy-profiles',
+        allowed_formats: ['jpg', 'jpeg', 'png', 'gif'],
+        transformation: [{ width: 200, height: 200, crop: 'fill' }]
+    }
+});
+
+const uploadProfileImage = multer({ storage: profileImageStorage });
 
 // Security headers middleware
 app.use((req, res, next) => {
@@ -47,7 +68,7 @@ app.use((req, res, next) => {
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 'http://localhost:5176', 'http://localhost:5177', 'http://localhost:5178', 'http://localhost:5179', 'http://localhost:5180', 'http://localhost:5181'],
+    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 'http://localhost:5176', 'http://localhost:5177', 'http://localhost:5178', 'http://localhost:5179', 'http://localhost:5180', 'http://localhost:5181'],
     credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));
@@ -277,7 +298,7 @@ app.post('/api/summarize', async (req, res) => {
 });
 
 // Profile image upload endpoint
-app.post('/api/upload-profile-image', upload.single('profileImage'), (req, res) => {
+app.post('/api/upload-profile-image', uploadProfileImage.single('profileImage'), (req, res) => {
     console.log('Profile image upload request received');
     console.log('File:', req.file);
     console.log('Body:', req.body);
@@ -288,10 +309,10 @@ app.post('/api/upload-profile-image', upload.single('profileImage'), (req, res) 
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
-        console.log('File uploaded successfully:', req.file.filename);
+        console.log('File uploaded successfully:', req.file);
 
-        // Return the file path that can be accessed by the frontend
-        const imageUrl = `/uploads/${req.file.filename}`;
+        // Return the Cloudinary URL
+        const imageUrl = req.file.path;
         console.log('Image URL:', imageUrl);
 
         res.json({
