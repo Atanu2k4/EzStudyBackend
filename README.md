@@ -199,11 +199,7 @@ The backend is designed to work seamlessly with the EzStudy Frontend:
 3. Update documentation for new features
 4. Test thoroughly before submitting PRs
 
-## 📄 License
-
-This project is licensed under the MIT License.
-
 ---
 
-Built with ❤️ for the EzStudy learning platform. Updated as of January 11, 2026.</content>
+Built with ❤️ for the EzStudy learning platform. Updated as of January 12, 2026.
 <parameter name="filePath">c:\Users\babin\Desktop\EzStudy\EzStudyBackend\README.md
