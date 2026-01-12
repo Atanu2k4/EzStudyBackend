@@ -49,14 +49,9 @@ const uploadProfileImage = multer({ storage: profileImageStorage });
 
 // Security headers middleware
 app.use((req, res, next) => {
-    // Allow requests from frontend
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-
+    // Remove manual CORS headers to let the cors middleware handle it
     // Permissive CSP for development
-    res.setHeader('Content-Security-Policy', "default-src *; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline'; img-src * data: blob:");
+    res.setHeader('Content-Security-Policy', "default-src *; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline'; img-src * data: blob:; connect-src *");
 
     if (req.method === 'OPTIONS') {
         res.sendStatus(200);
@@ -68,13 +63,19 @@ app.use((req, res, next) => {
 
 // Middleware
 app.use(cors({
-    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175', 'http://localhost:5176', 'http://localhost:5177', 'http://localhost:5178', 'http://localhost:5179', 'http://localhost:5180', 'http://localhost:5181'],
-    credentials: true
+    origin: true, // Reflects the request origin, effectively allowing all origins while supporting credentials
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Content-Length', 'X-Requested-With']
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Health check endpoint
+app.get('/', (req, res) => {
+    res.send('EzStudy Backend is running! Access API at /api/health');
+});
+
 app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', message: 'EzStudy Backend is running!' });
 });
