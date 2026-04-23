@@ -9,6 +9,7 @@ EzStudy Backend is a robust Express.js server that handles:
 - 📤 File upload and processing (PDFs, images, text files)
 - 🔐 API routing and CORS management
 - 📊 Data processing and response formatting
+- 🗃️ MongoDB Atlas persistence for users and chat history
 
 ## 🛠️ Tech Stack
 
@@ -16,6 +17,7 @@ EzStudy Backend is a robust Express.js server that handles:
 - 📤 **Multer** for file upload handling
 - 📕 **PDF-parse** for PDF text extraction
 - 🧠 **Groq API** integration for AI chat completions
+- 🍃 **MongoDB Node Driver** for Atlas persistence
 - 🔧 **ESM modules** for modern JavaScript
 
 ## 📁 Project Structure
@@ -53,6 +55,9 @@ EzStudyBackend/
    Create a `.env` file in the root directory:
    ```env
    GROQ_API_KEY=your_groq_api_key_here
+   MONGODB_URI=your_mongodb_atlas_connection_string
+   MONGODB_DB_NAME=EzStudyDB
+   GOOGLE_CLIENT_ID=your_google_oauth_client_id
    PORT=3001
    ```
 
@@ -70,6 +75,9 @@ The server will start on `http://localhost:3001`
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `GROQ_API_KEY` | Your Groq API key for AI chat completions | ✅ |
+| `MONGODB_URI` | MongoDB Atlas connection string for EzStudy data | ✅ |
+| `MONGODB_DB_NAME` | Separate database name for this project (defaults to `EzStudyDB`) | ❌ |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID for Google sign-in verification | ✅ for Google auth |
 | `PORT` | Server port (default: 3001) | ❌ |
 
 ### Getting a Groq API Key
@@ -85,6 +93,15 @@ The server will start on `http://localhost:3001`
 - **POST** `/api/chat` - Process chat messages with AI
   - Supports file uploads (PDFs, images, text)
   - Returns formatted AI responses with markdown support
+
+### Authentication API
+- **POST** `/api/auth/signup` - Store a manual sign-up in MongoDB
+- **POST** `/api/auth/signin` - Validate a manual sign-in against MongoDB
+- **POST** `/api/auth/google` - Verify and store a Google sign-in / sign-up in MongoDB
+
+### Chat Persistence API
+- **GET** `/api/chats/:userId` - Load all saved chats for a user
+- **PUT** `/api/chats/:userId` - Replace a user's saved chat history
 
 ### Quiz API
 - **POST** `/api/quiz` - Generate quiz questions
