@@ -185,6 +185,27 @@ cloudinary.config({
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const allowedOrigins = [
+    process.env.FRONTEND_URL,
+    'https://ezstudyai.vercel.app',
+    'http://localhost:5178',
+    'http://localhost:5180',
+].filter(Boolean);
+
+const corsOptions = {
+    origin: (origin, callback) => {
+        // Allow non-browser tools/calls without Origin, and configured frontend origins.
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+            return;
+        }
+
+        callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Content-Length', 'X-Requested-With'],
+};
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(process.cwd(), 'uploads');
@@ -213,25 +234,15 @@ const uploadProfileImage = multer({ storage: profileImageStorage });
 
 // Security headers middleware
 app.use((req, res, next) => {
-    // Remove manual CORS headers to let the cors middleware handle it
-    // Permissive CSP for development
+    // Keep CSP permissive for current app behavior.
     res.setHeader('Content-Security-Policy', "default-src *; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline'; img-src * data: blob:; connect-src *");
-
-    if (req.method === 'OPTIONS') {
-        res.sendStatus(200);
-        return;
-    }
 
     next();
 });
 
 // Middleware
-app.use(cors({
-    origin: true, // Reflects the request origin, effectively allowing all origins while supporting credentials
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Content-Length', 'X-Requested-With']
-}));
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
