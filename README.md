@@ -1,6 +1,21 @@
 # EzStudy Backend 🚀
 
-The backend component of EzStudy, built with Express.js. It handles AI integrations, file processing, and API services for the learning console.
+```text
+               ┌───────────────────────────────────────────────────────────────┐
+               │                                                               │
+               │  ███████╗███████╗███████╗████████╗██╗   ██╗██████╗ ██╗   ██╗  │
+               │  ██╔════╝╚══███╔╝██╔════╝╚══██╔══╝██║   ██║██╔══██╗╚██╗ ██╔╝  │
+               │  █████╗    ███╔╝ ███████╗   ██║   ██║   ██║██║  ██║ ╚████╔╝   │
+               │  ██╔══╝   ███╔╝  ╚════██║   ██║   ██║   ██║██║  ██║  ╚██╔╝    │
+               │  ███████╗███████╗███████║   ██║   ╚██████╔╝██████╔╝   ██║     │
+               │  ╚══════╝╚══════╝╚══════╝   ╚═╝    ╚═════╝ ╚═════╝    ╚═╝     │
+               │                                                               │
+               │     AI-Powered Study Assistant with Chat, Notes & Quiz        │
+               │                                                               │
+               └───────────────────────────────────────────────────────────────┘
+```
+
+The backend component of EzStudy, built with Express.js, providing AI integration, file processing, and API services for the learning platform.
 
 ## 📋 Overview
 
@@ -9,13 +24,15 @@ EzStudy Backend is a robust Express.js server that handles:
 - 📤 File upload and processing (PDFs, images, text files)
 - 🔐 API routing and CORS management
 - 📊 Data processing and response formatting
+- 🗃️ MongoDB Atlas persistence for users and chat history
 
 ## 🛠️ Tech Stack
 
 - 🚀 **Express.js** with CORS support
 - 📤 **Multer** for file upload handling
 - 📕 **PDF-parse** for PDF text extraction
-- 🧠 **Google Gemini** integration (primary) with automatic **Groq** fallback
+- 🧠 **Groq API** integration for AI chat completions
+- 🍃 **MongoDB Node Driver** for Atlas persistence
 - 🔧 **ESM modules** for modern JavaScript
 
 ## 📁 Project Structure
@@ -53,16 +70,9 @@ EzStudyBackend/
    ```env
    # Required for AI functionality (fallback provider)
    GROQ_API_KEY=your_groq_api_key_here
-
-   # Optional: Google Gemini API key (primary provider). If present, Gemini is used first and will
-   # automatically fall back to Groq on auth/quota/billing failures.
-   GOOGLE_GEMINI_API_KEY=your_google_gemini_api_key_here
-
-   # Optional: weather + location context
-   WEATHER_API_KEY=your_openweathermap_api_key_here
-   DEFAULT_LOCATION=London
-
-   # Server port (default 3001)
+   MONGODB_URI=your_mongodb_atlas_connection_string
+   MONGODB_DB_NAME=EzStudyDB
+   GOOGLE_CLIENT_ID=your_google_oauth_client_id
    PORT=3001
    ```
 
@@ -79,10 +89,10 @@ The server will start on `http://localhost:3001`
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `GROQ_API_KEY` | Groq API key (used as fallback and always required for AI) | ✅ |
-| `GOOGLE_GEMINI_API_KEY` | Google Gemini API key (used as primary if present) | ❌ |
-| `WEATHER_API_KEY` | (Optional) OpenWeatherMap API key to include device or default weather in context | ❌ |
-| `DEFAULT_LOCATION` | (Optional) Default city used when frontend doesn't provide coordinates | ❌ |
+| `GROQ_API_KEY` | Your Groq API key for AI chat completions | ✅ |
+| `MONGODB_URI` | MongoDB Atlas connection string for EzStudy data | ✅ |
+| `MONGODB_DB_NAME` | Separate database name for this project (defaults to `EzStudyDB`) | ❌ |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID for Google sign-in verification | ✅ for Google auth |
 | `PORT` | Server port (default: 3001) | ❌ |
 
 ### Getting API Keys
@@ -107,6 +117,15 @@ The server will start on `http://localhost:3001`
 - **POST** `/api/chat` - Process chat messages with AI
   - Supports file uploads (PDFs, images, text)
   - Returns formatted AI responses with markdown support
+
+### Authentication API
+- **POST** `/api/auth/signup` - Store a manual sign-up in MongoDB
+- **POST** `/api/auth/signin` - Validate a manual sign-in against MongoDB
+- **POST** `/api/auth/google` - Verify and store a Google sign-in / sign-up in MongoDB
+
+### Chat Persistence API
+- **GET** `/api/chats/:userId` - Load all saved chats for a user
+- **PUT** `/api/chats/:userId` - Replace a user's saved chat history
 
 ### Quiz API
 - **POST** `/api/quiz` - Generate quiz questions

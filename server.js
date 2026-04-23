@@ -6,13 +6,175 @@ import fs from 'fs';
 import path from 'path';
 import pdfParse from 'pdf-parse';
 import { v2 as cloudinary } from 'cloudinary';
-import { CloudinaryStorage } from 'multer-storage-cloudinary';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import multerStorageCloudinary from 'multer-storage-cloudinary';
+import { MongoClient, ObjectId } from 'mongodb';
+import { OAuth2Client } from 'google-auth-library';
 
 dotenv.config();
 
-// Initialize Google Generative AI
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
+const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'EzStudyDB';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+
+let mongoClient = null;
+let usersCollection = null;
+let chatsCollection = null;
+
+const googleAuthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+
+const normalizeEmail = (email) => (email || '').trim().toLowerCase();
+
+const parseObjectId = (value) => {
+    try {
+        if (!value || !ObjectId.isValid(value)) return null;
+        return new ObjectId(value);
+    } catch (error) {
+        return null;
+    }
+};
+
+const maskEmail = (email) => {
+    try {
+        const normalized = normalizeEmail(email);
+        const [local, domain] = normalized.split('@');
+        const localMasked = local.length > 1 ? `${local[0]}***` : '***';
+        const domainParts = domain ? domain.split('.') : [];
+        const domainMasked = domainParts.length ? `${domainParts[0][0]}***.${domainParts.slice(1).join('.')}` : '***';
+        return `${localMasked}@${domainMasked}`;
+    } catch (error) {
+        return '***@***.***';
+    }
+};
+
+const decodeJwtWithoutVerification = (token) => {
+    try {
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(
+            atob(base64)
+                .split('')
+                .map((char) => `%${(`00${char.charCodeAt(0).toString(16)}`).slice(-2)}`)
+                .join('')
+        );
+        return JSON.parse(jsonPayload);
+    } catch (error) {
+        return null;
+    }
+};
+
+const serializeUser = (userDoc) => {
+    if (!userDoc) return null;
+
+    return {
+        id: userDoc._id?.toString?.() || userDoc.id,
+        name: userDoc.name || '',
+        email: userDoc.emailLower || userDoc.email || '',
+        emailMasked: maskEmail(userDoc.emailLower || userDoc.email || ''),
+        provider: userDoc.provider || (Array.isArray(userDoc.authMethods) && userDoc.authMethods.includes('google') ? 'google' : 'local'),
+        authMethods: userDoc.authMethods || [],
+        profileImage: userDoc.profileImage || null,
+        createdAt: userDoc.createdAt || null,
+        lastLoginAt: userDoc.lastLoginAt || null,
+        activeChatId: userDoc.activeChatId || null,
+    };
+};
+
+const normalizeMessage = (message) => ({
+    id: message.id || Date.now(),
+    sender: message.sender === 'user' ? 'user' : 'ai',
+    text: message.text || '',
+    timestamp: message.timestamp ? new Date(message.timestamp) : new Date(),
+});
+
+const serializeChat = (chatDoc) => ({
+    id: chatDoc.chatId,
+    title: chatDoc.title || 'New Study Session',
+    preview: chatDoc.preview || 'Ready to help you excel!',
+    date: chatDoc.date || chatDoc.updatedAt || new Date(),
+    isActive: Boolean(chatDoc.isActive),
+    messages: Array.isArray(chatDoc.messages) ? chatDoc.messages.map(normalizeMessage) : [],
+    createdAt: chatDoc.createdAt || null,
+    updatedAt: chatDoc.updatedAt || null,
+});
+
+const initializeMongo = async () => {
+    if (!MONGODB_URI) {
+        console.warn('MONGODB_URI is not set. MongoDB persistence endpoints will return 503 until configured.');
+        return false;
+    }
+
+    try {
+        mongoClient = new MongoClient(MONGODB_URI);
+        await mongoClient.connect();
+
+        const db = mongoClient.db(MONGODB_DB_NAME);
+        usersCollection = db.collection('users');
+        chatsCollection = db.collection('chats');
+
+        await usersCollection.createIndex({ emailLower: 1 }, { unique: true });
+        await chatsCollection.createIndex({ userId: 1, chatId: 1 }, { unique: true });
+        await chatsCollection.createIndex({ userId: 1, updatedAt: -1 });
+
+        console.log(`MongoDB connected using database: ${MONGODB_DB_NAME}`);
+        return true;
+    } catch (error) {
+        console.error('MongoDB initialization failed:', error);
+        usersCollection = null;
+        chatsCollection = null;
+        return false;
+    }
+};
+
+const mongoReadyPromise = initializeMongo();
+
+const ensureMongoReady = async (res) => {
+    await mongoReadyPromise;
+    if (!usersCollection || !chatsCollection) {
+        res.status(503).json({ error: 'MongoDB Atlas is not configured or unavailable on the backend' });
+        return false;
+    }
+    return true;
+};
+
+const findUserByEmail = async (email) => {
+    const normalizedEmail = normalizeEmail(email);
+    return usersCollection.findOne({ emailLower: normalizedEmail });
+};
+
+const syncChatsForUser = async (userId, chats) => {
+    const now = new Date();
+    const chatIds = chats.map((chat) => chat.id);
+
+    if (chatIds.length === 0) {
+        await chatsCollection.deleteMany({ userId });
+        return;
+    }
+
+    for (const chat of chats) {
+        const normalizedMessages = Array.isArray(chat.messages) ? chat.messages.map(normalizeMessage) : [];
+        await chatsCollection.updateOne(
+            { userId, chatId: chat.id },
+            {
+                $set: {
+                    userId,
+                    chatId: chat.id,
+                    title: chat.title || 'New Study Session',
+                    preview: chat.preview || 'Ready to help you excel!',
+                    date: chat.date ? new Date(chat.date) : now,
+                    isActive: Boolean(chat.isActive),
+                    messages: normalizedMessages,
+                    updatedAt: now,
+                },
+                $setOnInsert: {
+                    createdAt: chat.createdAt ? new Date(chat.createdAt) : now,
+                },
+            },
+            { upsert: true }
+        );
+    }
+
+    await chatsCollection.deleteMany({ userId, chatId: { $nin: chatIds } });
+};
 
 // Configure Cloudinary
 cloudinary.config({
@@ -40,13 +202,11 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // Configure Cloudinary storage for profile images
-const profileImageStorage = new CloudinaryStorage({
+const profileImageStorage = multerStorageCloudinary({
     cloudinary: cloudinary,
-    params: {
-        folder: 'ezstudy-profiles',
-        allowed_formats: ['jpg', 'jpeg', 'png', 'gif'],
-        transformation: [{ width: 200, height: 200, crop: 'fill' }]
-    }
+    folder: 'ezstudy-profiles',
+    allowedFormats: ['jpg', 'jpeg', 'png', 'gif'],
+    transformation: [{ width: 200, height: 200, crop: 'fill' }]
 });
 
 const uploadProfileImage = multer({ storage: profileImageStorage });
@@ -195,7 +355,215 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'EzStudy Backend is running!' });
+    res.json({
+        status: 'ok',
+        message: 'EzStudy Backend is running!',
+        mongodb: usersCollection && chatsCollection ? 'connected' : 'not-connected'
+    });
+});
+
+app.post('/api/auth/signup', async (req, res) => {
+    try {
+        if (!await ensureMongoReady(res)) return;
+
+        const { name, email, passwordHash } = req.body || {};
+        const normalizedEmail = normalizeEmail(email);
+
+        if (!normalizedEmail || !passwordHash) {
+            return res.status(400).json({ error: 'Email and password are required' });
+        }
+
+        const existingUser = await findUserByEmail(normalizedEmail);
+        if (existingUser) {
+            return res.status(409).json({ error: 'User already exists with this email' });
+        }
+
+        const now = new Date();
+        const userDoc = {
+            name: name?.trim() || normalizedEmail.split('@')[0] || 'User',
+            email: normalizedEmail,
+            emailLower: normalizedEmail,
+            passwordHash,
+            authMethods: ['local'],
+            provider: 'local',
+            profileImage: null,
+            createdAt: now,
+            updatedAt: now,
+            lastLoginAt: now,
+            signInCount: 1,
+            activeChatId: null,
+        };
+
+        const result = await usersCollection.insertOne(userDoc);
+        const savedUser = await usersCollection.findOne({ _id: result.insertedId });
+
+        return res.status(201).json({ user: serializeUser(savedUser) });
+    } catch (error) {
+        console.error('Signup error:', error);
+        if (error.code === 11000) {
+            return res.status(409).json({ error: 'User already exists with this email' });
+        }
+        res.status(500).json({ error: error.message || 'Signup failed' });
+    }
+});
+
+app.post('/api/auth/signin', async (req, res) => {
+    try {
+        if (!await ensureMongoReady(res)) return;
+
+        const { email, passwordHash } = req.body || {};
+        const normalizedEmail = normalizeEmail(email);
+
+        if (!normalizedEmail || !passwordHash) {
+            return res.status(400).json({ error: 'Email and password are required' });
+        }
+
+        const user = await usersCollection.findOne({ emailLower: normalizedEmail, passwordHash });
+        if (!user) {
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        const now = new Date();
+        await usersCollection.updateOne(
+            { _id: user._id },
+            {
+                $set: {
+                    lastLoginAt: now,
+                    updatedAt: now,
+                },
+                $addToSet: { authMethods: 'local' },
+                $inc: { signInCount: 1 },
+            }
+        );
+
+        const refreshedUser = await usersCollection.findOne({ _id: user._id });
+        return res.json({ user: serializeUser(refreshedUser) });
+    } catch (error) {
+        console.error('Signin error:', error);
+        res.status(500).json({ error: error.message || 'Signin failed' });
+    }
+});
+
+app.post('/api/auth/google', async (req, res) => {
+    try {
+        if (!await ensureMongoReady(res)) return;
+
+        const { credential, profile } = req.body || {};
+        let payload = profile || null;
+
+        if (credential) {
+            if (googleAuthClient) {
+                const ticket = await googleAuthClient.verifyIdToken({
+                    idToken: credential,
+                    audience: GOOGLE_CLIENT_ID,
+                });
+                payload = ticket.getPayload();
+            } else {
+                payload = decodeJwtWithoutVerification(credential);
+            }
+        }
+
+        if (!payload?.email) {
+            return res.status(400).json({ error: 'Unable to read Google account details' });
+        }
+
+        const normalizedEmail = normalizeEmail(payload.email);
+        const now = new Date();
+        const updateDoc = {
+            $set: {
+                name: payload.name || payload.given_name || normalizedEmail.split('@')[0] || 'Google User',
+                email: normalizedEmail,
+                emailLower: normalizedEmail,
+                googleSub: payload.sub || null,
+                profileImage: payload.picture || null,
+                provider: 'google',
+                lastLoginAt: now,
+                updatedAt: now,
+            },
+            $setOnInsert: {
+                createdAt: now,
+                passwordHash: null,
+                activeChatId: null,
+                signInCount: 0,
+            },
+            $addToSet: { authMethods: 'google' },
+            $inc: { signInCount: 1 },
+        };
+
+        const result = await usersCollection.findOneAndUpdate(
+            { emailLower: normalizedEmail },
+            updateDoc,
+            { upsert: true, returnDocument: 'after' }
+        );
+
+        return res.json({ user: serializeUser(result.value) });
+    } catch (error) {
+        console.error('Google auth error:', error);
+        res.status(500).json({ error: error.message || 'Google authentication failed' });
+    }
+});
+
+app.get('/api/chats/:userId', async (req, res) => {
+    try {
+        if (!await ensureMongoReady(res)) return;
+
+        const userObjectId = parseObjectId(req.params.userId);
+        if (!userObjectId) {
+            return res.status(400).json({ error: 'Invalid user id' });
+        }
+
+        const user = await usersCollection.findOne({ _id: userObjectId });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const chats = await chatsCollection.find({ userId: userObjectId.toString() }).sort({ updatedAt: -1 }).toArray();
+
+        res.json({
+            chats: chats.map(serializeChat),
+            activeChatId: user.activeChatId || null,
+        });
+    } catch (error) {
+        console.error('Fetch chats error:', error);
+        res.status(500).json({ error: error.message || 'Failed to load chats' });
+    }
+});
+
+app.put('/api/chats/:userId', async (req, res) => {
+    try {
+        if (!await ensureMongoReady(res)) return;
+
+        const userObjectId = parseObjectId(req.params.userId);
+        if (!userObjectId) {
+            return res.status(400).json({ error: 'Invalid user id' });
+        }
+
+        const { chats = [], activeChatId = null } = req.body || {};
+        if (!Array.isArray(chats)) {
+            return res.status(400).json({ error: 'Chats must be an array' });
+        }
+
+        await syncChatsForUser(userObjectId.toString(), chats);
+
+        await usersCollection.updateOne(
+            { _id: userObjectId },
+            {
+                $set: {
+                    activeChatId,
+                    updatedAt: new Date(),
+                },
+            }
+        );
+
+        res.json({
+            success: true,
+            chats: chats.map(serializeChat),
+            activeChatId,
+        });
+    } catch (error) {
+        console.error('Save chats error:', error);
+        res.status(500).json({ error: error.message || 'Failed to save chats' });
+    }
 });
 
 // Chat completion endpoint - uses Google Gemini with Groq fallback
