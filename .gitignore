@@ -1,4 +1,9 @@
-node_modules/
-.env
-*.log
+# Environment files
+.env*
+
+# Uploaded user files
 uploads/
+
+# Ignore node_modules
+node_modules/
+

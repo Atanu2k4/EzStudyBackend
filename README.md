@@ -20,7 +20,7 @@ The backend component of EzStudy, built with Express.js, providing AI integratio
 ## 📋 Overview
 
 EzStudy Backend is a robust Express.js server that handles:
-- 🤖 AI chat completions via Groq API
+- 🤖 AI chat completions via Google Gemini (primary) with Groq fallback
 - 📤 File upload and processing (PDFs, images, text files)
 - 🔐 API routing and CORS management
 - 📊 Data processing and response formatting
@@ -42,10 +42,9 @@ EzStudyBackend/
 ├── server.js              # 🖥️ Main Express server file
 ├── package.json           # 📦 Dependencies and scripts
 ├── .env                   # 🔑 Environment variables
-├── .gitignore            # 🚫 Git ignore rules
-├── uploads/              # 📁 Temporary file storage
-│   └── ...               # Uploaded files
-└── node_modules/         # 📦 Installed dependencies
+├── .gitignore             # 🚫 Git ignore rules
+├── uploads/               # 📁 Temporary file storage (cleaned after processing)
+└── node_modules/          # 📦 Installed dependencies
 ```
 
 ## 🚀 Getting Started
@@ -63,12 +62,13 @@ EzStudyBackend/
 
 2. **Install dependencies:**
    ```bash
-   npm install
+   npm install --legacy-peer-deps
    ```
 
 3. **Configure environment variables:**
-   Create a `.env` file in the root directory:
+   Create a `.env` file in the root directory. Required and optional variables:
    ```env
+   # Required for AI functionality (fallback provider)
    GROQ_API_KEY=your_groq_api_key_here
    MONGODB_URI=your_mongodb_atlas_connection_string
    MONGODB_DB_NAME=EzStudyDB
@@ -95,12 +95,21 @@ The server will start on `http://localhost:3001`
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID for Google sign-in verification | ✅ for Google auth |
 | `PORT` | Server port (default: 3001) | ❌ |
 
-### Getting a Groq API Key
+### Getting API Keys
 
+#### Groq API Key (Required)
 1. Visit [Groq Console](https://console.groq.com/)
 2. Sign up for an account
 3. Generate an API key
-4. Add it to your `.env` file
+4. Add it to your `.env` file as `GROQ_API_KEY`
+
+#### Google Gemini API Key (Optional - for primary AI responses)
+1. Visit [Google AI Studio](https://aistudio.google.com/)
+2. Sign in with your Google account
+3. Create a new API key
+4. Add it to your `.env` file as `GOOGLE_GEMINI_API_KEY`
+
+**Note:** If Google Gemini API key is not provided, the system will use Groq as the primary API. When Google Gemini API expires or reaches quota limits, it automatically falls back to Groq.
 
 ## 📡 API Endpoints
 
@@ -127,15 +136,20 @@ The server will start on `http://localhost:3001`
 - `npm start` - Start the production server
 - `npm run dev` - Start with auto-restart (if nodemon is configured)
 
-## 🧠 AI Integration
+### AI Integration
 
-The backend integrates with Groq's Llama 3.3 70B model to provide:
+The backend supports a dual-provider setup with automatic switching:
+
+- Primary: Google Gemini (used when `GOOGLE_GEMINI_API_KEY` is configured)
+- Fallback: Groq (used when Gemini is not configured or when Gemini returns auth/quota/billing errors)
+
+Automatic API switching is handled server-side so the frontend experiences a seamless service.
+
+### AI Features
 - 📝 Contextual chat responses
 - 📄 Document analysis and summarization
 - 🖼️ Image content analysis
 - 📊 Educational content generation
-
-### AI Features
 - **Markdown Formatting**: AI responses include proper formatting
 - **File Context**: Uploaded files are analyzed and included in responses
 - **Personality Modes**: Tutor, Summarizer, and Examiner modes
@@ -178,11 +192,12 @@ The server includes comprehensive error handling for:
 
 ## 🤝 Integration with Frontend
 
-The backend is designed to work seamlessly with the EzStudy Frontend:
-- RESTful API design
-- JSON response format
-- File upload support via multipart/form-data
-- CORS configuration for local development
+Integration notes for local development:
+
+- Frontend recommended dev port: `5178` (Vite) and backend default port: `3001`.
+- Use `VITE_BACKEND_URL` in frontend `.env` to point to the backend (e.g. `http://localhost:3001`).
+- Authentication in the sample frontend uses a local `AuthModal` (credentials are hashed client-side and only masked user info is stored in `localStorage`).
+- File uploads use `multipart/form-data` and are cleaned up server-side after processing.
 
 ## 🚀 Deployment
 
@@ -205,7 +220,8 @@ The backend is designed to work seamlessly with the EzStudy Frontend:
 **Server won't start:**
 - Check if port 3001 is available
 - Verify `.env` file exists with correct API key
-- Ensure all dependencies are installed
+- Ensure all dependencies are installed with `npm install --legacy-peer-deps`
+- Check for dependency conflicts and use `--legacy-peer-deps` if needed
 
 **File upload fails:**
 - Check file size limits
@@ -213,9 +229,11 @@ The backend is designed to work seamlessly with the EzStudy Frontend:
 - Check uploads directory permissions
 
 **AI responses not working:**
-- Verify Groq API key is valid
+- Verify Groq API key is valid (required)
+- Check Google Gemini API key if using primary service
 - Check internet connection
 - Review API rate limits
+- System automatically falls back to Groq if Gemini fails
 
 ## 📈 Performance
 
@@ -233,4 +251,4 @@ The backend is designed to work seamlessly with the EzStudy Frontend:
 
 ---
 
-Built with ❤️ for the EzStudy learning platform. Updated as of January 12, 2026.
+Built with ❤️ for the EzStudy learning platform. Updated as of January 21, 2026.
