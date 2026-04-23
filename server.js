@@ -46,22 +46,6 @@ const maskEmail = (email) => {
     }
 };
 
-const decodeJwtWithoutVerification = (token) => {
-    try {
-        const base64Url = token.split('.')[1];
-        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        const jsonPayload = decodeURIComponent(
-            atob(base64)
-                .split('')
-                .map((char) => `%${(`00${char.charCodeAt(0).toString(16)}`).slice(-2)}`)
-                .join('')
-        );
-        return JSON.parse(jsonPayload);
-    } catch (error) {
-        return null;
-    }
-};
-
 const serializeUser = (userDoc) => {
     if (!userDoc) return null;
 
@@ -463,15 +447,17 @@ app.post('/api/auth/google', async (req, res) => {
         let payload = profile || null;
 
         if (credential) {
-            if (googleAuthClient) {
-                const ticket = await googleAuthClient.verifyIdToken({
-                    idToken: credential,
-                    audience: GOOGLE_CLIENT_ID,
+            if (!googleAuthClient || !GOOGLE_CLIENT_ID) {
+                return res.status(500).json({
+                    error: 'Google auth is not configured on backend. Set GOOGLE_CLIENT_ID in Render env.',
                 });
-                payload = ticket.getPayload();
-            } else {
-                payload = decodeJwtWithoutVerification(credential);
             }
+
+            const ticket = await googleAuthClient.verifyIdToken({
+                idToken: credential,
+                audience: GOOGLE_CLIENT_ID,
+            });
+            payload = ticket.getPayload();
         }
 
         if (!payload?.email) {
@@ -480,22 +466,26 @@ app.post('/api/auth/google', async (req, res) => {
 
         const normalizedEmail = normalizeEmail(payload.email);
         const now = new Date();
+        const setPayload = {
+            name: payload.name || payload.given_name || normalizedEmail.split('@')[0] || 'Google User',
+            email: normalizedEmail,
+            emailLower: normalizedEmail,
+            googleSub: payload.sub || null,
+            provider: 'google',
+            lastLoginAt: now,
+            updatedAt: now,
+        };
+
+        if (payload.picture) {
+            setPayload.profileImage = payload.picture;
+        }
+
         const updateDoc = {
-            $set: {
-                name: payload.name || payload.given_name || normalizedEmail.split('@')[0] || 'Google User',
-                email: normalizedEmail,
-                emailLower: normalizedEmail,
-                googleSub: payload.sub || null,
-                profileImage: payload.picture || null,
-                provider: 'google',
-                lastLoginAt: now,
-                updatedAt: now,
-            },
+            $set: setPayload,
             $setOnInsert: {
                 createdAt: now,
                 passwordHash: null,
                 activeChatId: null,
-                signInCount: 0,
             },
             $addToSet: { authMethods: 'google' },
             $inc: { signInCount: 1 },
