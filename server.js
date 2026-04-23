@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import pdfParse from 'pdf-parse';
 import { v2 as cloudinary } from 'cloudinary';
-import { CloudinaryStorage } from 'multer-storage-cloudinary';
+import multerStorageCloudinary from 'multer-storage-cloudinary';
 
 dotenv.config();
 
@@ -36,13 +36,11 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // Configure Cloudinary storage for profile images
-const profileImageStorage = new CloudinaryStorage({
+const profileImageStorage = multerStorageCloudinary({
     cloudinary: cloudinary,
-    params: {
-        folder: 'ezstudy-profiles',
-        allowed_formats: ['jpg', 'jpeg', 'png', 'gif'],
-        transformation: [{ width: 200, height: 200, crop: 'fill' }]
-    }
+    folder: 'ezstudy-profiles',
+    allowedFormats: ['jpg', 'jpeg', 'png', 'gif'],
+    transformation: [{ width: 200, height: 200, crop: 'fill' }]
 });
 
 const uploadProfileImage = multer({ storage: profileImageStorage });
