@@ -497,7 +497,11 @@ app.post('/api/auth/google', async (req, res) => {
             { upsert: true, returnDocument: 'after' }
         );
 
-        return res.json({ user: serializeUser(result.value) });
+        // MongoDB driver versions differ in findOneAndUpdate return shape.
+        // Normalize to always return the actual user document.
+        const updatedUserDoc = result?.value || result || await usersCollection.findOne({ emailLower: normalizedEmail });
+
+        return res.json({ user: serializeUser(updatedUserDoc) });
     } catch (error) {
         console.error('Google auth error:', error);
         res.status(500).json({ error: error.message || 'Google authentication failed' });
