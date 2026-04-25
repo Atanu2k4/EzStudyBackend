@@ -5,6 +5,7 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import pdfParse from 'pdf-parse';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { v2 as cloudinary } from 'cloudinary';
 import multerStorageCloudinary from 'multer-storage-cloudinary';
 import { MongoClient, ObjectId } from 'mongodb';
@@ -15,12 +16,15 @@ dotenv.config();
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'EzStudyDB';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_GEMINI_API_KEY = (process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '').trim();
+const GROQ_API_KEY = (process.env.GROQ_API_KEY || '').trim();
 
 let mongoClient = null;
 let usersCollection = null;
 let chatsCollection = null;
 
 const googleAuthClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+const genAI = GOOGLE_GEMINI_API_KEY ? new GoogleGenerativeAI(GOOGLE_GEMINI_API_KEY) : null;
 
 const normalizeEmail = (email) => (email || '').trim().toLowerCase();
 
@@ -257,67 +261,79 @@ function moderateContent(text) {
 
 // AI API utility function with fallback
 async function callAIAPI(messages, config = {}, fileContext = '') {
-    const googleApiKey = process.env.GOOGLE_GEMINI_API_KEY;
-    const groqApiKey = process.env.GROQ_API_KEY;
+    const googleApiKey = GOOGLE_GEMINI_API_KEY;
+    const groqApiKey = GROQ_API_KEY;
+    const geminiModelCandidates = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
 
     // Try Google Gemini first
-    if (googleApiKey && googleApiKey !== 'your_google_gemini_api_key_here') {
-        try {
-            const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    if (googleApiKey && googleApiKey !== 'your_google_gemini_api_key_here' && genAI) {
+        // Gemini chat history is strict about role ordering. Flatten messages into a
+        // single prompt to preserve context while avoiding role validation failures.
+        const systemInstructions = messages
+            .filter((msg) => msg.role === 'system')
+            .map((msg) => msg.content)
+            .join('\n\n');
 
-            // Build chat history for Gemini while preserving original roles
-            // messages is expected to already contain a `system` message (with file context) as the first item
-            const history = messages.slice(0, -1).map(msg => {
-                // preserve `system`, `assistant`, and `user` roles
-                const role = msg.role === 'system' ? 'system' : (msg.role === 'assistant' ? 'assistant' : (msg.role === 'user' ? 'user' : 'user'));
-                return {
-                    role,
-                    parts: [{ text: msg.content }]
-                };
-            });
+        const conversationText = messages
+            .filter((msg) => msg.role !== 'system')
+            .map((msg) => `${msg.role === 'assistant' ? 'Assistant' : 'User'}: ${msg.content}`)
+            .join('\n');
 
-            const chat = model.startChat({
-                history,
-                generationConfig: {
-                    temperature: config?.tone === 'creative' ? 0.9 : (config?.tone === 'precise' ? 0.3 : 0.7),
-                    maxOutputTokens: 2048,
-                }
-            });
+        const prompt = `${systemInstructions}\n\nConversation:\n${conversationText}\n\nAssistant:`;
 
-            const userMessage = messages[messages.length - 1].content;
-            const result = await chat.sendMessage(userMessage);
-            const response = result.response;
-            const text = response.text();
-
-            return {
-                choices: [{
-                    message: {
-                        content: text,
-                        role: 'assistant'
+        for (const modelName of geminiModelCandidates) {
+            try {
+                const model = genAI.getGenerativeModel({
+                    model: modelName,
+                    generationConfig: {
+                        temperature: config?.tone === 'creative' ? 0.9 : (config?.tone === 'precise' ? 0.3 : 0.7),
+                        maxOutputTokens: 2048,
                     }
-                }],
-                usage: {
-                    provider: 'google'
+                });
+
+                const result = await model.generateContent(prompt);
+                const response = result.response;
+                const text = response.text();
+
+                return {
+                    choices: [{
+                        message: {
+                            content: text,
+                            role: 'assistant'
+                        }
+                    }],
+                    usage: {
+                        provider: 'google',
+                        model: modelName,
+                    }
+                };
+            } catch (error) {
+                const msg = (error && (error.message || JSON.stringify(error))) || '';
+                const lowerMsg = msg.toLowerCase();
+                const shouldTryNextGeminiModel = [
+                    'not found',
+                    'unsupported',
+                    'unsupported model',
+                    'model',
+                    '404',
+                    'unavailable',
+                ].some((signal) => lowerMsg.includes(signal));
+
+                console.log(`Google Gemini model ${modelName} failed:`, error && (error.message || error.toString()));
+
+                if (shouldTryNextGeminiModel) {
+                    continue;
                 }
-            };
-        } catch (error) {
-            console.log('Google Gemini API failed, falling back to Groq:', error && (error.message || error.toString()));
 
-            // Detect common auth/quota/billing HTTP codes/messages to decide fallback
-            const msg = (error && (error.message || JSON.stringify(error))) || '';
-            const fallbackSignals = ['api_key', 'api-key', 'quota', 'billing', '401', '403', '429', 'invalid api', 'invalid key', 'permission'];
-            const shouldFallback = fallbackSignals.some(sig => msg.toLowerCase().includes(sig));
-
-            if (!shouldFallback) {
-                throw error; // Not an expected limit/auth error — surface it
+                // For auth/quota/permission or unexpected API failures, stop Gemini and fall back to Groq.
+                break;
             }
-            // otherwise continue to Groq fallback
         }
     }
 
     // Fallback to Groq API
     if (!groqApiKey) {
-        throw new Error('No AI API keys configured');
+        throw new Error('No AI API keys configured on backend runtime. Set GROQ_API_KEY and/or GOOGLE_GEMINI_API_KEY in Render environment variables, then redeploy.');
     }
 
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -353,7 +369,11 @@ app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
         message: 'EzStudy Backend is running!',
-        mongodb: usersCollection && chatsCollection ? 'connected' : 'not-connected'
+        mongodb: usersCollection && chatsCollection ? 'connected' : 'not-connected',
+        ai: {
+            geminiConfigured: Boolean(GOOGLE_GEMINI_API_KEY),
+            groqConfigured: Boolean(GROQ_API_KEY),
+        },
     });
 });
 
